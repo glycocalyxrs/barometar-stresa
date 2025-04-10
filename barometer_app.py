@@ -1,6 +1,22 @@
 import streamlit as st
 import numpy as np
-import pandas as pd # Dodato za lakše pravljenje grafikona
+import pandas as pd
+# import os # Nije neophodan za ovu verziju
+
+# --- Funkcija za učitavanje PDF-a (keširana) ---
+@st.cache_data # Kešira rezultat da se fajl ne čita stalno
+def load_pdf_bytes(pdf_path):
+    """Učitava PDF fajl i vraća njegov sadržaj kao bytes."""
+    try:
+        with open(pdf_path, "rb") as file:
+            return file.read()
+    except FileNotFoundError:
+        # Ispisuje grešku unutar Streamlit aplikacije ako fajl nedostaje
+        st.error(f"Greška: Fajl '{pdf_path}' nije pronađen. Proverite da li se nalazi u istom direktorijumu kao i Python skripta.")
+        return None
+    except Exception as e:
+        st.error(f"Došlo je do greške prilikom čitanja fajla '{pdf_path}': {e}")
+        return None
 
 # --- Konfiguracija Stranice ---
 st.set_page_config(
@@ -9,8 +25,33 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# --- Naslov i Uvodni Opis ---
-st.title("🧬 Ćelijski Barometar Stresa")
+# --- Naslov i Dugme za Preuzimanje PDF-a ---
+
+# Definiši ime PDF fajla (pretpostavlja se da je u istom direktorijumu)
+pdf_filename = "Inflamacija.pdf"
+pdf_bytes_content = load_pdf_bytes(pdf_filename)
+
+# Koristi kolone da postaviš naslov i dugme jedno pored drugog
+col_title, col_button = st.columns([4, 1]) # Odnos širine kolona (npr. 4:1)
+
+with col_title:
+    st.title("🧬 Ćelijski Barometar Stresa")
+
+with col_button:
+    # Dodaj malo praznog prostora iznad dugmeta za bolje vertikalno poravnanje
+    st.write("") # Prazan red može pomoći, ili koristi CSS za finije podešavanje
+    if pdf_bytes_content:
+        st.download_button(
+            label="📄 Preuzmi PDF Model",    # Tekst na dugmetu
+            data=pdf_bytes_content,         # Sadržaj fajla (bytes)
+            file_name="Inflamacija_Celijski_Barometar_Stresa.pdf", # Predloženo ime fajla za korisnika
+            mime="application/pdf",         # MIME tip za PDF
+            key='pdf-download',             # Jedinstveni ključ za dugme
+            help="Kliknite da preuzmete PDF dokument sa detaljnim objašnjenjem modela barometra stresa." # Tooltip
+        )
+    # Ako fajl nije pronađen, funkcija load_pdf_bytes će već ispisati grešku
+
+# --- Uvodni Opis Aplikacije ---
 st.markdown("""
 Ovaj alat procenjuje verovatnoću ćelijskog oštećenja **P(oštećenje)** na osnovu
 integrativnog modela koji uključuje ključne unutarćelijske parametre.
@@ -61,44 +102,33 @@ def calculate_barometer_vitals(ros, dpsi, peo, zn, cpla2, spla2):
     }
 
     # Izračunavanje ponderisanih doprinosa
-    # Napomena: Zaštitni faktori (dpsi, peo, zn) ulaze sa svojom vrednošću,
-    # ali imaju negativne težine. ROS ulazi kvadrirano.
     contributions = {
         "ROS": weights["ROS"] * ros**2,
-        "ΔΨm": weights["dpsi"] * dpsi, # npr. ako dpsi=1, doprinos = -2.5
-        "Membrane (PEO/EFA)": weights["peo"] * peo, # npr. ako peo=1, doprinos = -1.5
-        "Cink (Zn)": weights["zn"] * zn, # npr. ako zn=1, doprinos = -2.0
+        "ΔΨm": weights["dpsi"] * dpsi,
+        "Membrane (PEO/EFA)": weights["peo"] * peo,
+        "Cink (Zn)": weights["zn"] * zn,
         "cPLA2": weights["cpla2"] * cpla2,
         "sPLA2": weights["spla2"] * spla2
     }
 
-    # Ukupni logit skor (suma ponderisanih doprinosa)
-    # Ispravka: treba sabrati vrednosti iz rečnika contributions
     logit = sum(contributions.values())
+    p = 1 / (1 + np.exp(-logit))
+    p = np.clip(p, 0, 1)
 
-    # Verovatnoća P(oštećenje) pomoću logističke funkcije
-    # Ispravka: treba koristiti logit, a ne x
-    p = 1 / (1 + np.exp(-logit)) # Korišćenje standardnog minusa ovde
-    p = np.clip(p, 0, 1) # Osigurava da je uvek između 0 i 1
-
-    # Određivanje dominantnog faktora
-    if not contributions: # Ako je rečnik prazan
+    if not contributions:
         dominant_factor = "Nema podataka"
         dominant_value = 0
     else:
-        # Pronalazi ključ sa najvećom apsolutnom vrednošću doprinosa
         dominant_factor = max(contributions, key=lambda k: abs(contributions[k]))
         dominant_value = contributions[dominant_factor]
 
-    # Određivanje uticaja dominantnog faktora
-    if dominant_value > 0.01: # Mala tolerancija za skoro nulte vrednosti
+    if dominant_value > 0.01:
         influence = " (Povećava Rizik)"
-    elif dominant_value < -0.01: # Korišćenje standardnog minusa
+    elif dominant_value < -0.01:
         influence = " (Smanjuje Rizik)"
     else:
         influence = " (Minimalan Uticaj)"
 
-    # Kvalitativna ocena rizika
     if p < 0.33:
         risk_level = "🟢 Nizak"
     elif p < 0.66:
@@ -110,59 +140,58 @@ def calculate_barometer_vitals(ros, dpsi, peo, zn, cpla2, spla2):
 
 # --- Izračunavanje i Prikaz Rezultata ---
 
-# Poziv funkcije
+# Poziv funkcije za izračunavanje
 p_damage, risk_level_str, dominant_factor_str, contrib_dict = calculate_barometer_vitals(
     ros, dpsi, peo, zn, cpla2, spla2
 )
 
 st.subheader("📊 Rezultat Procene Barometra")
 
-col1, col2 = st.columns([1, 2])
+# Koristi kolone za raspored rezultata i vizualizacije doprinosa
+col_result, col_contrib = st.columns([1, 2])
 
-with col1:
+with col_result:
     st.metric(label="Verovatnoća Oštećenja P(d)", value=f"{p_damage*100:.1f}%")
-    # Koristi Markdown za prikaz sa bojom
+    # Koristi Markdown za prikaz statusa sa bojom
     color_map = {"🟢": "green", "🟡": "orange", "🔴": "red"}
     status_emoji = risk_level_str.split(" ")[0]
     status_text = " ".join(risk_level_str.split(" ")[1:])
     st.markdown(f"**Status:** <span style='color:{color_map.get(status_emoji, 'black')}; font-size: 1.1em;'>{status_emoji} {status_text}</span>", unsafe_allow_html=True)
     st.markdown(f"**Ključni Faktor:** `{dominant_factor_str}`")
 
-
-with col2:
+with col_contrib:
     st.markdown("**Vizuelni Prikaz Doprinosa Riziku:**")
-    # Pripremi podatke za grafikon - koristimo apsolutne vrednosti za visinu bara
-    # a boja može ukazivati na smer (npr. crveno za povećanje, zeleno za smanjenje)
-    # Ispravka: Proveriti da li je contrib_dict popunjen pre kreiranja DataFrame-a
+    # Provera da li postoje doprinosi pre kreiranja DataFrame-a
     if contrib_dict:
         df_contrib = pd.DataFrame({
             'Faktor': contrib_dict.keys(),
             'Apsolutni Doprinos': [abs(v) for v in contrib_dict.values()],
             'Smer': ['Povećava Rizik' if v > 0 else 'Smanjuje Rizik' for v in contrib_dict.values()],
-            'Stvarni Doprinos': [v for v in contrib_dict.values()] # Dodato za prikaz tačne vrednosti
+            'Stvarni Doprinos': [v for v in contrib_dict.values()] # Za ispis tačne vrednosti
         })
         df_contrib = df_contrib.sort_values(by='Apsolutni Doprinos', ascending=False)
 
-        # Stilizovaniji prikaz pomoću Markdown
         st.markdown("*(Prikaz relativnog uticaja svakog faktora na skor rizika)*")
-        max_abs_contrib = df_contrib['Apsolutni Doprinos'].max() if not df_contrib.empty else 1 # Za normalizaciju bara
+        # Određivanje maksimalnog apsolutnog doprinosa za normalizaciju barova
+        max_abs_contrib = df_contrib['Apsolutni Doprinos'].max() if not df_contrib.empty else 1
 
+        # Prikaz barova pomoću Markdown
         for index, row in df_contrib.iterrows():
-            # Jednostavna vizuelna skala (npr. koristeći unicode blokove)
-            # Normalizacija dužine bara prema maksimalnom apsolutnom doprinosu
+            # Izračunavanje dužine bara normalizovano
             if max_abs_contrib > 0:
                  bar_len = int((row['Apsolutni Doprinos'] / max_abs_contrib) * 20) # Skaliranje na max 20 blokova
             else:
                  bar_len = 0
 
-            bar = "█" * bar_len
+            bar = "█" * bar_len # Korišćenje unicode bloka za bar
             color = "red" if row['Smer'] == 'Povećava Rizik' else "green"
-            # Prikazi samo ako ima značajnog uticaja
+
+            # Prikaz samo ako faktor ima značajan uticaj
             if abs(row['Stvarni Doprinos']) > 0.01:
                  st.markdown(f"`{row['Faktor']}`: <span style='color:{color}'>{bar}</span> ({row['Stvarni Doprinos']:.2f})", unsafe_allow_html=True)
     else:
+        # Poruka ako nema podataka o doprinosima
         st.write("Nema dostupnih podataka o doprinosima.")
-
 
 # --- Napomena / Disclaimer ---
 st.markdown("---")
